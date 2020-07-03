@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:file="http://www.mulesoft.org/schema/mule/file" xmlns:batch="http://www.mulesoft.org/schema/mule/batch"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:vm="http://www.mulesoft.org/schema/mule/vm" xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd">
+	<db:config name="Database_Config" doc:name="Database Config" doc:id="30dc4628-e274-4171-8d43-13a63501f2f2" >
+		<db:my-sql-connection host="${db.host}" port="${db.port}" user="${db.user}" password="${db.password}" database="${db.database}" />
+	</db:config>
+	<configuration-properties doc:name="Configuration properties" doc:id="8cd48ecb-3670-4d41-aae4-2b8e5e629564" file="config.yaml" />
+	<vm:config name="VM_Config" doc:name="VM Config" doc:id="abf767e5-bff8-463c-b3fe-43f29caa43b5" >
+		<vm:queues >
+			<vm:queue queueName="validate" />
+			<vm:queue queueName="daed letter" />
+		</vm:queues>
+	</vm:config>
+	<flow name="diy-13-1Flow1" doc:id="de106ebf-65e4-4150-9d99-5ac6376d32be" >
+		<vm:listener queueName="validate" doc:name="Listener" doc:id="55714111-4ec2-4eb4-8364-0ecc21245c8e" config-ref="VM_Config"/>
+		<ee:transform doc:name="Transform Message" doc:id="4fa8e60b-2a20-42e2-9919-eeaf05a63995" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0 
+output application/json
+---
+
+if( mod(payload.transactionID as Number,4) == 0)
+	true
+else
+	false]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<logger level="INFO" doc:name="Logger" doc:id="81c8c74b-74fd-4796-b855-6fd0aac4f3fa" message="VALIDATE FLOW"/>
+	</flow>
+	<flow name="diy-13-1Flow" doc:id="de609ab8-f718-45d4-bf88-34cb1f8d8ae6" >
+		<scheduler doc:name="Scheduler" doc:id="68029c20-ffd3-47e4-9083-f92e59f7bb30" >
+			<scheduling-strategy >
+				<fixed-frequency frequency="30" timeUnit="SECONDS"/>
+			</scheduling-strategy>
+		</scheduler>
+		<os:retrieve doc:name="Retrieve" doc:id="2201b0e9-6f3d-4343-b8f0-e0987a7f7413" key="lastID" target="lastTransactionID">
+			<os:default-value ><![CDATA[0]]></os:default-value>
+		</os:retrieve>
+		<db:select doc:name="Select" doc:id="6e2ddc6e-70b7-47d1-95ea-c704ec017f91" config-ref="Database_Config">
+			<db:sql ><![CDATA[SELECT *
+FROM flights_transactions
+WHERE transactionID > :lastTransactionID
+LIMIT 10
+]]></db:sql>
+			<db:input-parameters ><![CDATA[#[lastTransactionID: vars.lastTransactionID]]]></db:input-parameters>
+		</db:select>
+		<os:store doc:name="Store" doc:id="da9515fa-135f-4f7b-a186-6f7cb2b89f29" key="lastID">
+			<os:value ><![CDATA[#[max(payload.*transactionID) default [vars.lastTransactionID]]]]></os:value>
+		</os:store>
+		<batch:job jobName="diy-13-1Batch_Job" doc:id="ad202ec7-f9ae-4e33-915d-84679e4244d8" maxFailedRecords="2">
+			<batch:process-records >
+				<batch:step name="Batch_Step" doc:id="004fd935-42d5-4e4d-a835-9a9cac24987d" >
+					<flow-ref doc:name="errorFlow" doc:id="f9ef9a52-c285-48b5-8901-6e928f90ba10" name="errorFlow" target="object"/>
+					<vm:publish-consume queueName="validate" doc:name="Publish consume" doc:id="abbb8ac8-848e-4b20-87a6-f5eb77fa364e" config-ref="VM_Config" target="valid" timeout="60">
+					</vm:publish-consume>
+					<logger level="INFO" doc:name="Logger" doc:id="c35f5bd4-2c40-42ae-9cae-769722b3d50d" message="#[vars.valid]"/>
+				</batch:step>
+				<batch:step name="ifTrue" doc:id="6fad90c5-579e-4ea4-b212-d24ba55422f1" acceptExpression="#[vars.valid default false]">
+					<logger level="INFO" doc:name="Logger" doc:id="03f10f4c-966b-4428-990a-4d80031e7fa1" message="#[vars.valid]"/>
+					<batch:aggregator doc:name="Batch Aggregator" doc:id="82f25f77-c066-4dfe-8846-25a7b5691cdd" size="50">
+						<file:write doc:name="Write" doc:id="586bc4eb-2a18-40a8-83a5-c3d2ea7f8e5e" path="${filepath}" >
+							<file:content ><![CDATA[#[output application/csv --- payload]]]></file:content>
+						</file:write>
+					</batch:aggregator>
+				</batch:step>
+				<batch:step name="Batch_Step1" doc:id="4d7ed257-e10c-40f0-9fe9-719c920be6c9" acceptPolicy="ONLY_FAILURES">
+					<vm:publish queueName="validate" doc:name="Publish" doc:id="d6399d3e-13af-4945-a61e-197c751e717a" config-ref="VM_Config"/>
+				</batch:step>
+			</batch:process-records>
+			<batch:on-complete >
+				<logger level="INFO" doc:name="Logger" doc:id="c2b6e445-93f1-461f-b810-dfbd383df7c6" message="COMPLETE"/>
+			</batch:on-complete>
+		</batch:job>
+	</flow>
+	<flow name="errorFlow" doc:id="2502af4a-dd5e-4dfe-ad9c-24fcf378a7d2" >
+		<ee:transform doc:name="Copy_of_Transform Message" doc:id="12871fd1-0d34-4029-ad0a-fb6eabc04624" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0 
+output application/java
+---
+
+if( mod(payload.transactionID as Number,4) == 0)
+	true
+else
+	false]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<choice doc:name="Copy_of_Choice" doc:id="86ba75c5-bdf7-4957-8dab-35f3463c3056" >
+			<when expression="#[payload == true]" >
+				<raise-error doc:name="Raise error" doc:id="39575255-0886-4c89-82bb-b8753e499952" type="COMPLIANCE: INVALID" description="payload not okay"/>
+			</when>
+			<otherwise >
+				<logger level="INFO" doc:name="Copy_of_Logger" doc:id="4eb04212-188b-46ae-b65d-37cd110b0851" message="PAYLOAD FALSE" />
+			</otherwise>
+		</choice>
+	</flow>
+</mule>
